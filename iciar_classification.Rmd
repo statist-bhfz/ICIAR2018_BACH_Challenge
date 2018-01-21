@@ -434,7 +434,18 @@ preds_classes <- unname(substr(preds_classes, 11, 100))
 true_classes <- img_labels[val_index]
 
 table(preds_classes, true_classes)
+true_classes
 
+#preds_classes Benign InSitu Invasive Normal
+#
+#    Benign        8      1        0      0
+#
+#    InSitu        0     10        3      0
+#
+#    Invasive      1      1        7      0
+#
+#    Normal        0      0        0      9
+	
 val_index
 # 15  26  32  45  51  54  80  89  90 117 125 130 134 136 147 155 162 165 167 185 187 
 # 218 222 224 227 255 272 276 278 289 298 335 336 359 366 371 381 393 397 399
