@@ -16,8 +16,8 @@ library(reticulate)
 images_dir <- "data/train/"
 # val_directory <- "data/val/"
 
-img_height <- 384
-img_width <- 512
+img_height <- 400
+img_width <- 400
 batch_size <- 4
 epochs <- 25
 train_samples = 360
@@ -29,9 +29,42 @@ val_index <- c(1:400)[-train_index]
 ```
 
 ```{r}
-imageRead <- function(image_file,
-                      target_width = 512, 
-                      target_height = 384) {
+randomBSH <- function(img,
+                      u = 0,
+                      brightness_shift_lim = c(90, 110), # percentage
+                      saturation_shift_lim = c(95, 105), # of current value
+                      hue_shift_lim = c(80, 120)) {
+
+    if (rnorm(1) < u) return(img)
+
+    brightness_shift <- runif(1, 
+                              brightness_shift_lim[1], 
+                              brightness_shift_lim[2])
+    saturation_shift <- runif(1, 
+                              saturation_shift_lim[1], 
+                              saturation_shift_lim[2])
+    hue_shift <- runif(1, 
+                       hue_shift_lim[1], 
+                       hue_shift_lim[2])
+
+    img <- image_modulate(img, 
+                          brightness = brightness_shift, 
+                          saturation =  saturation_shift, 
+                          hue = hue_shift)
+    img
+}
+
+randomHorizontalFlip <- function(img, 
+                                 u = 0) {
+
+    if (rnorm(1) < u) return(img)
+
+    image_flop(img)
+}
+
+imageReadAug <- function(image_file,
+                         target_width = img_width, 
+                         target_height = img_height) {
     img <- image_read(image_file)
     img <- image_crop(img, paste0(target_width, 
                                   "x", 
@@ -40,11 +73,31 @@ imageRead <- function(image_file,
                                   min(runif(1, 1, 2048), 2048 - target_width), 
                                   "+", 
                                   min(runif(1, 1, 1536), 1536 - target_height)))
+   
+     img <- randomBSH(img)
+     img <- randomHorizontalFlip(img)
 
     return(img)
 }
 
-images_iter <- list.files(train_directory, 
+imageRead <- function(image_file,
+                      target_width = img_width, 
+                      target_height = img_height) {
+    img <- image_read(image_file)
+    img <- image_read(image_file)
+    img <- image_scale(img, paste0(2048/2, "x", 1536/2, "!"))
+    img <- image_crop(img, paste0(target_width, 
+                                  "x", 
+                                  target_height, 
+                                  "+", 
+                                  min(runif(1, 1, 2048/2), 2048/2 - target_width), 
+                                  "+", 
+                                  min(runif(1, 1, 1536/2), 1536/2 - target_height)))
+   
+    return(img)
+}
+
+images_iter <- list.files(images_dir, 
                           pattern = ".jpg", 
                           full.names = TRUE,
                           recursive = TRUE)
@@ -53,8 +106,8 @@ img <- imageRead(images_iter[1])
 img
 
 img2arr <- function(image, 
-                    target_width = 512,
-                    target_height = 384) {
+                    target_width = img_width,
+                    target_height = img_height) {
     result <- as.numeric(image[[1]])
     dim(result) <- c(1, target_height, target_width, 3)
     return(result)
@@ -127,6 +180,55 @@ train_generator <- function(images_dir,
         return(result)
     }
 }
+
+val_generator <- function(images_dir,
+                          img_labels,
+                          samples_index,
+                          batch_size) {
+
+    images_iter <- list.files(images_dir, 
+                              pattern = ".jpg", 
+                              full.names = TRUE,
+                              recursive = TRUE)[samples_index] # for current epoch
+    images_all <- list.files(images_dir, 
+                             pattern = ".jpg",
+                             full.names = TRUE,
+                             recursive = TRUE)[samples_index]  # for next epoch
+
+    images_labels_iter <- images_labels[samples_index, ] # for current epoch
+    images_labels_all <- images_labels[samples_index, ] # for next epoch
+
+    
+    function() {
+
+        # start new epoch
+        if (length(images_iter) < batch_size) {
+            images_iter <<- images_all
+            images_labels_iter <<- images_labels_all
+        }
+
+        batch_ind <- sample(1:length(images_iter), batch_size)
+
+        batch_images_list <- images_iter[batch_ind]
+        images_iter <<- images_iter[-batch_ind]
+        batch_images_labels <- images_labels_iter[batch_ind, ]
+        images_labels_iter <<- images_labels_iter[-batch_ind, ]
+
+        x_batch <- foreach(i = 1:batch_size) %dopar% {
+            x_imgs <- imageRead(image_file = batch_images_list[i])
+            # return as array
+            x_arr <- img2arr(x_imgs)
+        }
+
+        x_batch <- do.call(abind, c(x_batch, list(along = 1)))
+
+        y_batch <- batch_images_labels
+
+        result <- list(keras_array(x_batch), 
+                       keras_array(y_batch))
+        return(result)
+    }
+}
 ```
 
 
@@ -138,54 +240,31 @@ train_iterator <- py_iterator(train_generator(images_dir = images_dir,
                                               samples_index = train_index,
                                               batch_size = batch_size))
 
-val_iterator <- py_iterator(train_generator(images_dir = images_dir,
-                                              img_labels = images_labels,
-                                              samples_index = val_index,
-                                              batch_size = batch_size))
+val_iterator <- py_iterator(val_generator(images_dir = images_dir,
+                                          img_labels = images_labels,
+                                          samples_index = val_index,
+                                          batch_size = batch_size))
 ```
 
 
-```{r}
-# datagen <- image_data_generator()
-# 
-# train_generator <- flow_images_from_directory(
-#     train_directory, 
-#     generator = datagen,
-#     target_size = c(img_height, img_width),
-#     color_mode = "rgb",
-#     class_mode = "categorical", 
-#     batch_size = batch_size, 
-#     shuffle = TRUE,
-#     seed = 123)
-# 
-# val_generator <- flow_images_from_directory(
-#     val_directory, 
-#     generator = image_data_generator(),
-#     target_size = c(img_height, img_width), 
-#     color_mode = "rgb", 
-#     class_mode = "categorical", 
-#     batch_size = batch_size,
-#     shuffle = FALSE) 
-```
 
 
 ```{r}
-base_model <- application_inception_v3(weights = "imagenet", 
-                                       include_top = FALSE,
-                                       input_shape = c(img_height, img_width, 3))
-
+base_model <- application_resnet50(weights = "imagenet", 
+                                   include_top = FALSE,
+                                   input_shape = c(img_height, img_width, 3))
 # Custom layers
 predictions <- base_model$output %>% 
-  layer_global_average_pooling_2d() %>% 
-  layer_dense(units = 1024, activation = "relu") %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 256, activation = "relu") %>% 
   layer_dense(units = 4, activation = "softmax")
 
 model <- keras_model(inputs = base_model$input, 
                      outputs = predictions)
-
+freeze_weights(model, to = "avg_pool")
 model %>% compile(
   loss = "categorical_crossentropy",
-  optimizer = optimizer_sgd(lr = 0.0001, 
+  optimizer = optimizer_sgd(lr = 0.0002, 
                             momentum = 0.9, 
                             decay = 1e-5),
   metrics = "accuracy"
@@ -194,7 +273,28 @@ model %>% compile(
 
 
 ```{r}
-tensorboard("logs/inception3")
+tensorboard("logs/resnet")
+
+callbacks_list <- list(
+    callback_tensorboard("logs/resnet"),
+    callback_early_stopping(monitor = "val_acc",
+                            min_delta = 1e-4,
+                            patience = 6,
+                            verbose = 1,
+                            mode = "max"),
+    callback_reduce_lr_on_plateau(monitor = "val_loss",
+                                  factor = 0.5,
+                                  patience = 3,
+                                  verbose = 1,
+                                  epsilon = 1e-4,
+                                  mode = "min"),
+    callback_model_checkpoint(filepath = 
+                              "models/resnet/resnet_{epoch:02d}.h5",
+                              monitor = "val_loss",
+                              save_best_only = TRUE,
+                              save_weights_only = TRUE, 
+                              mode = "min" )
+  )
 
 model %>% fit_generator(
   train_iterator,
@@ -203,13 +303,140 @@ model %>% fit_generator(
   validation_data = val_iterator,
   validation_steps = as.integer(validation_samples / batch_size),
   verbose = 1,
-  
-  callbacks = list(
-      callback_model_checkpoint(
-          "models/inception3/inception3_{epoch:02d}_{val_acc:.2f}.h5",
-          save_weights_only = TRUE),
-      callback_tensorboard("logs/inception3"),
-      callback_csv_logger("logs/inception3/log_inception3.csv", separator = ";")
-  )
+  callbacks = callbacks_list
 )
 ```
+
+```{r}
+base_model <- application_resnet50(weights = "imagenet", 
+                                   include_top = FALSE,
+                                   input_shape = c(img_height, img_width, 3))
+# Custom layers
+predictions <- base_model$output %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 256, activation = "relu") %>% 
+  layer_dense(units = 4, activation = "softmax")
+
+model <- keras_model(inputs = base_model$input, 
+                     outputs = predictions)
+
+load_model_weights_hdf5(model, "models/resnet/resnet_22.h5") 
+
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_sgd(lr = 0.0001, 
+                            momentum = 0.9, 
+                            decay = 1e-5),
+  metrics = "accuracy"
+)
+
+callbacks_list <- list(
+    callback_tensorboard("logs/resnet"),
+    callback_csv_logger("logs/resnet/resnet_finetune.csv", separator = ";"),
+    callback_early_stopping(monitor = "val_acc",
+                            min_delta = 1e-4,
+                            patience = 6,
+                            verbose = 1,
+                            mode = "max"),
+    callback_reduce_lr_on_plateau(monitor = "val_loss",
+                                  factor = 0.5,
+                                  patience = 3,
+                                  verbose = 1,
+                                  epsilon = 1e-4,
+                                  mode = "min"),
+    callback_model_checkpoint(filepath = 
+                              "models/resnet/resnet_finetune_{epoch:02d}.h5",
+                              monitor = "val_loss",
+                              save_best_only = TRUE,
+                              save_weights_only = TRUE, 
+                              mode = "min" )
+  )
+
+model %>% fit_generator(
+  train_iterator,
+  steps_per_epoch = as.integer(train_samples / batch_size), 
+  epochs = epochs, 
+  validation_data = val_iterator,
+  validation_steps = as.integer(validation_samples / batch_size),
+  verbose = 1,
+  callbacks = callbacks_list
+)
+
+```
+
+
+```{r}
+load_model_weights_hdf5(model, "models/resnet/resnet_finetune_20.h5") 
+
+test_generator <- function(images_dir,
+                           samples_index,
+                           batch_size) {
+
+    images_iter <- list.files(images_dir, 
+                              pattern = ".jpg", 
+                              full.names = TRUE,
+                              recursive = TRUE)[samples_index] # for current epoch
+    images_all <- list.files(images_dir, 
+                             pattern = ".jpg",
+                             full.names = TRUE,
+                             recursive = TRUE)[samples_index]  # for next epoch
+    
+    function() {
+
+        # start new epoch
+        if (length(images_iter) < batch_size) {
+            images_iter <<- images_all
+        }
+
+        batch_ind <- 1:4
+
+        batch_images_list <- images_iter[batch_ind]
+        images_iter <<- images_iter[-batch_ind]
+
+        x_batch <- foreach(i = 1:batch_size) %dopar% {
+            x_imgs <- imageRead(image_file = batch_images_list[i])
+            # return as array
+            x_arr <- img2arr(x_imgs)
+        }
+
+        x_batch <- do.call(abind, c(x_batch, list(along = 1)))
+
+
+        result <- list(keras_array(x_batch))
+        return(result)
+    }
+}
+
+test_iterator <- py_iterator(test_generator(images_dir = images_dir,
+                                            samples_index = val_index,
+                                            batch_size = batch_size))
+
+preds <- array(dim = c(40, 4, 10))
+for (i in 1:10) {
+    test_iterator <- py_iterator(test_generator(images_dir = images_dir,
+                                                samples_index = val_index,
+                                                batch_size = batch_size))
+    preds[, , i] <- predict_generator(model, 
+                                     test_iterator, 
+                                     steps = as.integer(validation_samples /
+                                                        batch_size))
+}
+
+preds <- apply(preds, c(1, 2), mean)
+
+classes <- apply(preds, 1, function(x) which(x == max(x)))
+class_names <- colnames(images_labels)
+names(class_names) <- 1:4
+
+preds_classes <- class_names[classes]
+preds_classes <- unname(substr(preds_classes, 11, 100))
+
+true_classes <- img_labels[val_index]
+
+table(preds_classes, true_classes)
+
+val_index
+# 15  26  32  45  51  54  80  89  90 117 125 130 134 136 147 155 162 165 167 185 187 
+# 218 222 224 227 255 272 276 278 289 298 335 336 359 366 371 381 393 397 399
+```
+
